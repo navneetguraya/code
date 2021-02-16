@@ -1,0 +1,425 @@
+import boto3
+import paramiko
+import time
+import scp
+import os
+
+ec2 = boto3.resource('ec2')
+vpcclient = boto3.client('ec2')
+nav = int(input("enter the '0' to exit\n press 1 to take default value\n press 2 to take input from user  "))
+
+while (nav != 0):
+    if (nav == 1):
+        vpccidr = "172.31.0.0/16"
+        publicsubnetcidr = "172.31.64.0/23"
+        privatesubnetcidr = "172.31.32.0/24"
+        publicami = 'ami-08e0ca9924195beba'
+        natami = 'ami-00999044593c895de'
+        privateami = 'ami-08e0ca9924195beba'
+        print(vpccidr ,"is the default cidr for vpc creation")
+        print(publicsubnetcidr ,"is the default cidr for public subnet creation")
+        print(privatesubnetcidr ,"is the default cidr for private subnet creation")
+        print(publicami ,"is the default ami-id for the public instance")
+        print(natami ,"is the default ami-id for the nat instance")
+        print(privateami ,"is the default ami-id for the private instance")
+    if (nav == 2):
+        vpccidr = input("enter the cidr for vpc ")
+        publicsubnetcidr = input("enter the cidr for public subnet ")
+        privatesubnetcidr = input("enter the cidr for private subnet ")
+        publicami = input("enter the ami for the public instance ")
+        natami = input("enter the ami for nat instance ")
+        privateami = input("enter the ami for the private instance")
+        print(vpccidr ,"is the cidr you have entered for vpc creation")
+        print(publicsubnetcidr ,"is the cidr you have entered for public subnet creation")
+        print(privatesubnetcidr ,"is the cidr you have entered for private subnet creation")
+        print(publicami ,"is the ami-id you have entered for the public instance creation")
+        print(natami ,"is the ami-id you have entered for the nat instance creation")
+        print(privateami ,"is the ami-id you have entered for the private instance creation")
+
+    vpc = ec2.create_vpc(CidrBlock=vpccidr)
+    ec2.create_tags(Resources=[vpc.id], Tags=[{'Key': 'Name', 'Value': 'pythonvpc'}])
+    print(vpc.id , "is the vpc-id")
+
+    # public subnet creation
+    subnet = ec2.create_subnet(CidrBlock=publicsubnetcidr, VpcId=vpc.id, AvailabilityZone='ap-south-1b')
+    ec2.create_tags(Resources=[subnet.id], Tags=[{'Key': 'Name', 'Value': 'publicsubnet'}])
+    print(subnet.id ," is the public subnet id ")
+
+    # private subnet creation
+    psubnet = ec2.create_subnet(CidrBlock=privatesubnetcidr, VpcId=vpc.id, AvailabilityZone='ap-south-1b')
+    ec2.create_tags(Resources=[psubnet.id], Tags=[{'Key': 'Name', 'Value': 'privatesubnet'}])
+    print(psubnet.id ,"is the private subnet id")
+
+    # public route table creation
+    publicroutetable = ec2.create_route_table(VpcId=vpc.id)
+    print(publicroutetable.id ,"is the public route table id")
+    ec2.create_tags(Resources=[publicroutetable.id], Tags=[{'Key': 'Name', 'Value': 'publicrt'}])
+
+    # private route table creation
+    privateroutetable = ec2.create_route_table(VpcId=vpc.id)
+    print(privateroutetable.id ,"is the private route table id")
+    ec2.create_tags(Resources=[privateroutetable.id], Tags=[{'Key': 'Name', 'Value': 'privatert'}])
+
+    # internet gateway creation
+    internetgateway = ec2.create_internet_gateway()
+    print(internetgateway.id ,"is the internet gateway id ")
+    vpc.attach_internet_gateway(InternetGatewayId=internetgateway.id)  # attaching the internet gateway
+
+    # public instance security group creation
+    publicsg = ec2.create_security_group(
+        VpcId=vpc.id,
+        Description='public instance security group',
+        GroupName='public_sg')
+    print(publicsg.id ,"is the public security group id")
+    abc1 = [publicsg.id]
+    # nat instance security group creation
+    natsg = ec2.create_security_group(
+        VpcId=vpc.id,
+        Description='nat instance security group',
+        GroupName='nat_sg')
+    print(natsg.id ,"is the nat security group id")
+    abc2 = [natsg.id]
+    # private instance security group creation
+    privatesg = ec2.create_security_group(
+        VpcId=vpc.id,
+        Description='private instance security group',
+        GroupName='private_sg')
+    print(privatesg.id ,"is the private security group id")
+    abc3 = [privatesg.id]
+
+    # public security group indound rule added
+    data1 = vpcclient.authorize_security_group_ingress(
+        GroupId=publicsg.id,
+        IpPermissions=[
+            {'IpProtocol': 'tcp',
+             'FromPort': 80,
+             'ToPort': 80,
+             'IpRanges': [{'CidrIp': '203.76.248.114/32'}]},
+            {'IpProtocol': 'tcp',
+             'FromPort': 22,
+             'ToPort': 22,
+             'IpRanges': [{'CidrIp': '203.76.248.114/32'}]},
+            {'IpProtocol': 'tcp',
+             'FromPort': 443,
+             'ToPort': 443,
+             'IpRanges': [{'CidrIp': '203.76.248.114/32'}]},
+            {'IpProtocol': 'tcp',
+             'FromPort': 22,
+             'ToPort': 22,
+             'IpRanges': [{'CidrIp': '13.233.177.0/29'}]}
+        ])
+    print('Ingress Successfully Set %s' % data1)
+    print("public security group inbound rules added")
+
+    # nat security group inbound rule added
+    data2 = vpcclient.authorize_security_group_ingress(
+        GroupId=natsg.id,
+        IpPermissions=[
+            {'IpProtocol': 'tcp',
+             'FromPort': 80,
+             'ToPort': 80,
+             'IpRanges': [{'CidrIp': privatesubnetcidr}]},
+            {'IpProtocol': 'tcp',
+             'FromPort': 22,
+             'ToPort': 22,
+             'IpRanges': [{'CidrIp': '203.76.248.114/32'}]},
+            {'IpProtocol': 'tcp',
+             'FromPort': 443,
+             'ToPort': 443,
+             'IpRanges': [{'CidrIp': privatesubnetcidr}]},
+            {'IpProtocol': '-1',
+             'FromPort': -1,
+             'ToPort': -1,
+             'UserIdGroupPairs': [{
+                 'GroupId': privatesg.id}]},
+            {'IpProtocol': 'icmp',
+             'FromPort': -1,
+             'ToPort': -1,
+             'IpRanges': [{'CidrIp': privatesubnetcidr}]}
+        ])
+    print('Ingress Successfully Set %s' % data2)
+    print("nat security group inbound rule added")
+
+    # private security group inbound rule added
+    data3 = vpcclient.authorize_security_group_ingress(
+        GroupId=privatesg.id,
+        IpPermissions=[
+            {'IpProtocol': 'tcp',
+             'FromPort': 80,
+             'ToPort': 80,
+             'IpRanges': [{'CidrIp': '203.76.248.114/32'}]},
+            {'IpProtocol': 'tcp',
+             'FromPort': 22,
+             'ToPort': 22,
+             'IpRanges': [{'CidrIp': '203.76.248.114/32'}]},
+            {'IpProtocol': 'tcp',
+             'FromPort': 443,
+             'ToPort': 443,
+             'IpRanges': [{'CidrIp': '203.76.248.114/32'}]},
+            {'IpProtocol': 'tcp',
+             'FromPort': 22,
+             'ToPort': 22,
+             'IpRanges': [{'CidrIp': publicsubnetcidr}]},
+            {'IpProtocol': '-1',
+             'FromPort': -1,
+             'ToPort': -1,
+             'UserIdGroupPairs': [{
+                 'GroupId': natsg.id}]},
+            {'IpProtocol': 'tcp',
+             'FromPort': 8080,
+             'ToPort': 8080,
+             'UserIdGroupPairs': [{
+                 'GroupId': publicsg.id}]}
+        ])
+    print('Ingress Successfully Set %s' % data3)
+    print("private security group inbound rule added")
+    # creating the public instance
+    publicinstance = ec2.create_instances(
+        ImageId=privateami,
+        MinCount=1,
+        MaxCount=1,
+        InstanceType='t2.micro',
+        KeyName='sir',
+        NetworkInterfaces=[
+            {
+                'DeviceIndex': 0,
+                'SubnetId': subnet.id,
+                'Groups': abc1,
+                'AssociatePublicIpAddress': True
+            }],
+    )
+    publicinstance[0].wait_until_running()
+    xyz = publicinstance[0].id
+    print(xyz ,"is the public instance id")
+    ec2.create_tags(Resources=[publicinstance[0].id], Tags=[{'Key': 'Name', 'Value': 'public_instance'}])
+
+
+    def get_public_ip(instance_id):
+        ec2_client = boto3.client("ec2", region_name="ap-south-1")
+        reservations = ec2_client.describe_instances(InstanceIds=[instance_id]).get("Reservations")
+        for reservation in reservations:
+            for instance in reservation['Instances']:
+                return (instance.get("PublicIpAddress"))
+
+
+    pub_instance_id = publicinstance[0].id
+    pub_ip = str(get_public_ip(pub_instance_id))
+    print(pub_ip ,"is the public ip of the public instance")
+
+    # creating the nat instance
+
+    natinstance = ec2.create_instances(
+        ImageId=natami,
+        MinCount=1,
+        MaxCount=1,
+        InstanceType='t2.micro',
+        KeyName='sir',
+        NetworkInterfaces=[
+            {
+                'DeviceIndex': 0,
+                'SubnetId': subnet.id,
+                'Groups': abc2,
+                'AssociatePublicIpAddress': True
+            }],
+    )
+    natinstance[0].wait_until_running()
+    print(natinstance[0].id ,"is the nat instance id ")
+    ec2.create_tags(Resources=[natinstance[0].id], Tags=[{'Key': 'Name', 'Value': 'nat_instance'}])
+
+    # creating the priavte instance
+
+    privateinstance = ec2.create_instances(
+        ImageId=privateami,
+        MinCount=1,
+        MaxCount=1,
+        InstanceType='t2.micro',
+        SecurityGroupIds=abc3,
+        KeyName='sir',
+        SubnetId=psubnet.id)
+    # time.sleep(20)
+    privateinstance[0].wait_until_running()
+    print(privateinstance[0].id ,"is the private instance id")
+    ec2.create_tags(Resources=[privateinstance[0].id], Tags=[{'Key': 'Name', 'Value': 'private_instance'}])
+    privateip = str(privateinstance[0].private_ip_address)
+    print(privateip ,"is the private ip of the private instance")
+
+    result = vpcclient.modify_instance_attribute(InstanceId=natinstance[0].id, SourceDestCheck={'Value': False})
+    print("no source destination check done")
+    # route table editing
+    route1 = publicroutetable.create_route(DestinationCidrBlock='0.0.0.0/0', GatewayId=internetgateway.id)
+    print("internet gateway id is added to the public route table")
+    route2 = privateroutetable.create_route(DestinationCidrBlock='0.0.0.0/0', InstanceId=natinstance[0].id)
+    print("nat instance id is added to the private route table")
+
+    # route table association
+    publicroutetable.associate_with_subnet(SubnetId=subnet.id)
+    privateroutetable.associate_with_subnet(SubnetId=psubnet.id)
+    print("route tables got associated with subnets ")
+
+    var3 = """#!/bin/bash
+        #Required
+        domain=demossl
+        commonname=$domain
+        #Change to your company details
+        country=IN
+        state=BR
+        locality=Patna
+        organization=ct.com
+        organizationalunit=IT
+        email=demo@gmail.com
+        #Optional
+        password=dummypassword
+        if [ -z "$domain" ]
+        then
+            echo "Argument not present."
+            echo "Useage $0 [common name]"
+            exit 99
+        fi
+        echo "Generating key request for $domain"
+        #Generate a key
+        openssl genrsa -des3 -passout pass:$password -out $domain.key 2048 -noout
+        #Remove passphrase from the key. Comment the line out to keep the passphrase
+        echo "Removing passphrase from key"
+        openssl rsa -in $domain.key -passin pass:$password -out $domain.key
+        #Create the request
+        echo "Creating CSR"
+        openssl req -new -key $domain.key -out $domain.csr -passin pass:$password -subj "/C=$country/ST=$state/L=$locality/O=$organization/OU=$organizationalunit/CN=$commonname/emailAddress=$email"   
+        openssl x509 -req -days 365 -in $domain.csr -signkey $domain.key -out $domain.crt
+        """
+    var1 = """domain=navneet.com
+        commonname=$domain
+
+        #your company details
+        country=IN
+        state=BR
+        locality=Patna
+        organization=www.ct.com
+        organizationalunit=IT
+        email=demo@gmail.com"""
+
+
+    # Bydefault your SSL certification value is below:
+    def changecompany():
+        global country, state, locality, organization, email, organizationalunit, var3
+
+        country = str(input("Enter country: "))
+        state = str(input("Enter state: "))
+        locality = str(input("Enter locality: "))
+        organization = str(input("Enter organization: "))
+        organizationalunit = str(input("Enter organizationalunit: "))
+        email = str(input("Enter email: "))
+        var3 = var3.replace("IN", country)
+        var3 = var3.replace("HR", state)
+        var3 = var3.replace("karnal", locality)
+        var3 = var3.replace("cloudtechner.com", organization)
+        var3 = var3.replace("IT", organizationalunit)
+        var3 = var3.replace("demo@gmail.com", email)
+        var3 = var3.replace("demossl", "navneet_ssl")
+
+
+    print(var1)
+    print("if you want to change the value type 0 or type 1 to go by default")
+    var2 = str(input("Enter 1 or 0: "))
+    if var2 == "0":
+        changecompany()
+    elif var2 == "1":
+        exit
+    else:
+        print("Invalid Input")
+
+    file = open("ssl.sh", "w")
+    file.write(var3)
+    file.close()
+
+    # ssh into public instance
+    KEY = "sir.pem"
+    localpath = 'sir.pem'
+    remotepath = 'sir.pem'
+    localpath1 = 'ssl.sh'
+    remotepath1 = 'ssl.sh'
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(hostname=pub_ip, username="ec2-user", key_filename=KEY)
+    sftp = ssh.open_sftp()
+    sftp.put(localpath, remotepath)
+    sftp.put(localpath1, remotepath1)
+    sftp.close()
+    ssh.close()
+    key = paramiko.RSAKey.from_private_key_file("sir.pem")
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    print(key)
+
+    try:
+        # Here 'amazon linux' is user name and 'instance_ip' is public IP of EC2
+        client.connect(hostname=pub_ip, username="ec2-user", pkey=key)
+        # Execute a command(cmd) after connecting/ssh to an instance
+        stdin, stdout, stderr = client.exec_command("sudo chmod 600 sir.pem")
+        stdin, stdout, stderr = client.exec_command("sudo yum install httpd -y")
+        print("apache got installed")
+        time.sleep(10)
+        stdin, stdout, stderr = client.exec_command("sudo systemctl start httpd")
+        stdin, stdout, stderr = client.exec_command("sudo yum install -y mod_ssl")
+        print("ssl is installing")
+        time.sleep(10)
+        stdin, stdout, stderr = client.exec_command("sudo yum install dos2unix -y")
+        print("dos2unix is installing")
+        time.sleep(10)
+        stdin, stdout, stderr = client.exec_command("sudo chmod +wrx ssl.sh")
+        print("giving permission to ")
+        time.sleep(10)
+        stdin, stdout, stderr = client.exec_command("dos2unix ssl.sh")
+        time.sleep(10)
+        stdin, stdout, stderr = client.exec_command("sh ssl.sh")
+        print("ssl.sh is executing")
+        time.sleep(20)
+        print("virtual host conf file is creating")
+        stdin, stdout, stderr = client.exec_command("sudo mv navneet_ssl.* /etc/pki/tls/certs/")
+        stdin, stdout, stderr = client.exec_command("sudo touch filename")
+        stdin, stdout, stderr = client.exec_command("sudo chmod 666 filename")
+        stdin, stdout, stderr = client.exec_command("echo '<VirtualHost *:443>'>>filename")
+        stdin, stdout, stderr = client.exec_command("echo ' ServerAdmin webmaster@localhost'>>filename")
+        stdin, stdout, stderr = client.exec_command("echo ' ServerName navneet-cloudtechner.com'>>filename")
+        stdin, stdout, stderr = client.exec_command("echo ' ServerAlias www.cloudtechner.com'>>filename")
+        stdin, stdout, stderr = client.exec_command("echo ' DocumentRoot /var/www/html/'>>filename")
+        stdin, stdout, stderr = client.exec_command("echo ' '>>filename")
+        stdin, stdout, stderr = client.exec_command("echo ' SSLEngine on'>>filename")
+        stdin, stdout, stderr = client.exec_command("echo ' SSLCertificateFile /etc/pki/tls/certs/navneet_ssl.crt'>>filename")
+        stdin, stdout, stderr = client.exec_command("echo ' SSLCertificateKeyFile /etc/pki/tls/certs/navneet_ssl.key'>>filename")
+        stdin, stdout, stderr = client.exec_command("echo ' SSLProxyEngine on'>>filename")
+        stdin, stdout, stderr = client.exec_command("echo ' ProxyPass / http://"+privateip+":8080/'>>filename")
+        stdin, stdout, stderr = client.exec_command("echo ' ProxyPassReverse / http://"+privateip+":8080/'>>filename")
+        stdin, stdout, stderr = client.exec_command("echo '</VirtualHost>'>>filename")
+        stdin, stdout, stderr = client.exec_command("sudo cp filename /etc/httpd/conf.d/filename.conf")
+        stdin, stdout, stderr = client.exec_command("sudo chmod 666 /etc/httpd/conf.d/filename.conf")
+        stdin, stdout, stderr = client.exec_command("sudo chmod 666 /etc/hosts")
+        time.sleep(10)
+        stdin, stdout, stderr = client.exec_command("echo "+pub_ip+" navneet_cloudtechner.com>>/etc/hosts")
+        stdin, stdout, stderr = client.exec_command("ssh -o StrictHostKeyChecking=no ec2-user@"+privateip+" uptime")
+        stdin, stdout, stderr = client.exec_command("ssh -i sir.pem ec2-user@"+privateip)
+        stdin, stdout, stderr = client.exec_command("ssh -i sir.pem ec2-user@"+privateip+" sudo yum install java -y")
+        print("java is installing ")
+        time.sleep(10)
+        stdin, stdout, stderr = client.exec_command("ssh -i sir.pem ec2-user@"+privateip+" sudo wget https://mirrors.estointernet.in/apache/tomcat/tomcat-8/v8.5.61/bin/apache-tomcat-8.5.61.tar.gz")
+        print("apache tomcat tar file is downloading ")
+        time.sleep(10)
+        stdin, stdout, stderr = client.exec_command("ssh -i sir.pem ec2-user@"+privateip+" sudo tar -xvf apache-tomcat-8.5.61.tar.gz")
+        print("extration of tar file ")
+        time.sleep(20)
+        stdin, stdout, stderr = client.exec_command("ssh -i sir.pem ec2-user@"+privateip+" sudo chmod +rx apache-tomcat-8.5.61/webapps/")
+        stdin, stdout, stderr = client.exec_command("ssh -i sir.pem ec2-user@"+privateip+" sudo chmod +rx apache-tomcat-8.5.61/bin/")
+        stdin, stdout, stderr = client.exec_command("ssh -i sir.pem ec2-user@"+privateip+" sudo wget https://get.jenkins.io/war/2.272/jenkins.war")
+        print("jenkins war file is downloading")
+        time.sleep(20)
+        stdin, stdout, stderr = client.exec_command("ssh -i sir.pem ec2-user@"+privateip+" sudo chmod +x apache-tomcat-8.5.61/bin/startup.sh")
+        stdin, stdout, stderr = client.exec_command("ssh -i sir.pem ec2-user@"+privateip+" sudo mv jenkins.war apache-tomcat-8.5.61/webapps/")
+        stdin, stdout, stderr = client.exec_command("ssh -i sir.pem ec2-user@"+privateip+" sudo sh apache-tomcat-8.5.61/bin/startup.sh")
+        print("tomcat is starting")
+        stdin, stdout, stderr = client.exec_command("sudo systemctl restart httpd")
+        print("apache got restart")
+        print(stdout.read())
+        # close the client connection once the job is done
+        client.close()
+    except Exception as e:
+        print(e)
+    nav = int(input("enter the '0' to exit\n press 1 to continue "))
